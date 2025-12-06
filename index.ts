@@ -114,12 +114,13 @@ async function waitForBrowserCheck(page: Page): Promise<void> {
 
   // Take screenshot on timeout for debugging
   try {
-    const screenshotPath = `/tmp/timeout-${Date.now()}.png`;
+    const timestamp = Date.now();
+    const screenshotPath = `./timeout-${timestamp}.png`;
     await page.screenshot({ path: screenshotPath, fullPage: true });
     console.log(`Timeout screenshot saved to: ${screenshotPath}`);
     
     const html = await page.content();
-    const htmlPath = `/tmp/timeout-${Date.now()}.html`;
+    const htmlPath = `./timeout-${timestamp}.html`;
     await Bun.write(htmlPath, html);
     console.log(`Timeout HTML saved to: ${htmlPath}`);
   } catch (e) {
