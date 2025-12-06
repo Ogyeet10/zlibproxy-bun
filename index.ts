@@ -185,6 +185,7 @@ const DIRECT_PATH_PATTERNS = [
   "/favicon", // Favicons
   "/img/", // Images directory
   "/fonts/", // Fonts directory
+  "/dl/", // Download URLs
 ];
 
 function shouldGoDirect(pathname: string): boolean {
