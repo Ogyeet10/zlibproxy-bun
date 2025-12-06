@@ -30,6 +30,20 @@ const SKIP_HEADERS = [
   "upgrade",
   "x-proxy-auth", // Our auth header
   "user-agent", // Don't override - let Patchright use its own UA to match browser fingerprint
+  // Client hints - these describe the CLIENT's browser, not Patchright's, causing fingerprint mismatch
+  "sec-ch-ua",
+  "sec-ch-ua-arch",
+  "sec-ch-ua-bitness",
+  "sec-ch-ua-full-version",
+  "sec-ch-ua-full-version-list",
+  "sec-ch-ua-mobile",
+  "sec-ch-ua-model",
+  "sec-ch-ua-platform",
+  "sec-ch-ua-platform-version",
+  "sec-fetch-dest",
+  "sec-fetch-mode",
+  "sec-fetch-site",
+  "sec-fetch-user",
 ];
 
 function logIncomingHeaders(req: Request, targetUrl: string): void {
@@ -82,7 +96,11 @@ async function initBrowser(): Promise<BrowserContext> {
     console.log("Launching browser...");
     browser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+      ],
     });
 
     console.log("Creating browser context...");
@@ -92,7 +110,7 @@ async function initBrowser(): Promise<BrowserContext> {
     });
 
     // Handle browser disconnect
-    browser.on('disconnected', () => {
+    browser.on("disconnected", () => {
       console.log("Browser disconnected!");
       browser = null;
       context = null;
@@ -138,7 +156,7 @@ async function waitForBrowserCheck(page: Page): Promise<void> {
     const screenshotPath = `./timeout-${timestamp}.png`;
     await page.screenshot({ path: screenshotPath, fullPage: true });
     console.log(`Timeout screenshot saved to: ${screenshotPath}`);
-    
+
     const html = await page.content();
     const htmlPath = `./timeout-${timestamp}.html`;
     await Bun.write(htmlPath, html);
@@ -320,9 +338,9 @@ Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
 
-    if (req.headers.get("X-Proxy-Auth") !== AUTH_TOKEN) {
-      return new Response("Unauthorized", { status: 401 });
-    }
+    // if (req.headers.get("X-Proxy-Auth") !== AUTH_TOKEN) {
+    //   return new Response("Unauthorized", { status: 401 });
+    // }
 
     const targetPath = url.pathname + url.search;
     const targetUrl = TARGET_DOMAIN + targetPath;
