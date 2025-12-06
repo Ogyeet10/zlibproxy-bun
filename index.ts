@@ -19,16 +19,16 @@ let browserInitPromise: Promise<BrowserContext> | null = null;
 
 // Headers to skip when forwarding (hop-by-hop or problematic)
 const SKIP_HEADERS = [
-  'host',
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailers',
-  'transfer-encoding',
-  'upgrade',
-  'x-proxy-auth', // Our auth header
+  "host",
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailers",
+  "transfer-encoding",
+  "upgrade",
+  "x-proxy-auth", // Our auth header
 ];
 
 function logIncomingHeaders(req: Request, targetUrl: string): void {
@@ -36,22 +36,22 @@ function logIncomingHeaders(req: Request, targetUrl: string): void {
   req.headers.forEach((value, key) => {
     console.log(`  ${key}: ${value}`);
   });
-  console.log('-------------------------------------------\n');
+  console.log("-------------------------------------------\n");
 }
 
 function getForwardHeaders(req: Request): Record<string, string> {
   const headers: Record<string, string> = {};
-  
+
   req.headers.forEach((value, key) => {
     if (!SKIP_HEADERS.includes(key.toLowerCase())) {
       headers[key] = value;
     }
   });
-  
+
   // Override/set essential headers for z-library
-  headers['Referer'] = TARGET_DOMAIN + '/';
-  headers['Origin'] = TARGET_DOMAIN;
-  
+  headers["Referer"] = TARGET_DOMAIN + "/";
+  headers["Origin"] = TARGET_DOMAIN;
+
   return headers;
 }
 
@@ -60,17 +60,17 @@ async function initBrowser(): Promise<BrowserContext> {
   if (browserInitPromise) {
     return browserInitPromise;
   }
-  
+
   // Return existing context if already initialized
   if (browser && context) {
     return context;
   }
-  
+
   // Create new initialization promise
   browserInitPromise = (async () => {
     console.log("Launching browser...");
     browser = await chromium.launch({
-      headless: true,
+      headless: false,
     });
 
     console.log("Creating browser context...");
@@ -122,9 +122,32 @@ async function fetchWithBrowser(
   const page = await ctx.newPage();
 
   try {
-    // Forward all headers from the incoming request
+    // Forward all headers from the incoming request (except cookie - handled separately)
     const headers = getForwardHeaders(req);
+    delete headers['cookie']; // Remove cookie from headers, we'll set it on context
+    delete headers['Cookie'];
     await page.setExtraHTTPHeaders(headers);
+
+    // Parse and set cookies on the browser context
+    const cookieHeader = req.headers.get('cookie');
+    if (cookieHeader) {
+      const cookiesToSet = cookieHeader.split(';').map(c => {
+        const parts = c.trim().split('=');
+        const name = parts[0]?.trim() || '';
+        const value = parts.slice(1).join('=').trim();
+        return {
+          name,
+          value,
+          domain: '.z-library.ec',
+          path: '/',
+        };
+      }).filter(c => c.name !== '' && c.value !== '');
+      
+      if (cookiesToSet.length > 0) {
+        await ctx.addCookies(cookiesToSet);
+        console.log(`  -> Set ${cookiesToSet.length} cookies on browser context`);
+      }
+    }
 
     // Navigate and wait for network to be mostly idle
     await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
@@ -214,7 +237,7 @@ function shouldGoDirect(pathname: string): boolean {
 
 async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
   const headers = getForwardHeaders(req);
-  headers['accept-encoding'] = 'identity'; // No compression for direct
+  headers["accept-encoding"] = "identity"; // No compression for direct
 
   console.log(`  -> Forwarding headers to ${targetUrl}:`);
   Object.entries(headers).forEach(([key, value]) => {
@@ -240,7 +263,7 @@ async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
 
   // Forward ALL Set-Cookie headers (there can be multiple)
   const setCookies = response.headers.getSetCookie();
-  setCookies.forEach(cookie => {
+  setCookies.forEach((cookie) => {
     responseHeaders.append("Set-Cookie", cookie);
   });
 
@@ -280,10 +303,7 @@ Bun.serve({
       // HTML pages - use browser to bypass verification
       console.log(`[${req.method}] [BROWSER] ${targetUrl}`);
 
-      const { html, status, cookies } = await fetchWithBrowser(
-        targetUrl,
-        req
-      );
+      const { html, status, cookies } = await fetchWithBrowser(targetUrl, req);
 
       const responseHeaders = new Headers();
       responseHeaders.set("Content-Type", "text/html; charset=utf-8");
