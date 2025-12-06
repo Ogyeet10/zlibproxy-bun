@@ -15,24 +15,66 @@ const AUTH_TOKEN = "e3882d5fc0f2cbaa696067c5fdc8457ca8c25cc4b7f56353";
 
 let browser: Browser | null = null;
 let context: BrowserContext | null = null;
+let browserInitPromise: Promise<BrowserContext> | null = null;
+
+// Headers to skip when forwarding (hop-by-hop or problematic)
+const SKIP_HEADERS = [
+  'host',
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailers',
+  'transfer-encoding',
+  'upgrade',
+  'x-proxy-auth', // Our auth header
+];
+
+function getForwardHeaders(req: Request): Record<string, string> {
+  const headers: Record<string, string> = {};
+  
+  req.headers.forEach((value, key) => {
+    if (!SKIP_HEADERS.includes(key.toLowerCase())) {
+      headers[key] = value;
+    }
+  });
+  
+  // Override/set essential headers
+  headers['Referer'] = TARGET_DOMAIN + '/';
+  headers['Origin'] = TARGET_DOMAIN;
+  
+  return headers;
+}
 
 async function initBrowser(): Promise<BrowserContext> {
-  if (!browser) {
+  // Return existing promise if browser is being initialized
+  if (browserInitPromise) {
+    return browserInitPromise;
+  }
+  
+  // Return existing context if already initialized
+  if (browser && context) {
+    return context;
+  }
+  
+  // Create new initialization promise
+  browserInitPromise = (async () => {
     console.log("Launching browser...");
     browser = await chromium.launch({
       headless: true,
     });
-  }
 
-  if (!context) {
     console.log("Creating browser context...");
     context = await browser.newContext({
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     });
-  }
 
-  return context;
+    return context;
+  })();
+
+  return browserInitPromise;
 }
 
 async function waitForBrowserCheck(page: Page): Promise<void> {
@@ -66,14 +108,16 @@ async function waitForBrowserCheck(page: Page): Promise<void> {
 
 async function fetchWithBrowser(
   targetUrl: string,
-  method: string,
-  _body?: string,
-  _contentType?: string
+  req: Request
 ): Promise<{ html: string; status: number; cookies: string[] }> {
   const ctx = await initBrowser();
   const page = await ctx.newPage();
 
   try {
+    // Forward all headers from the incoming request
+    const headers = getForwardHeaders(req);
+    await page.setExtraHTTPHeaders(headers);
+
     // Navigate and wait for network to be mostly idle
     await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
 
@@ -90,12 +134,10 @@ async function fetchWithBrowser(
     const cookies = await ctx.cookies();
     const cookieStrings = cookies.map((c) => `${c.name}=${c.value}`);
 
-    await page.close();
-
     return { html, status: 200, cookies: cookieStrings };
-  } catch (error) {
-    await page.close();
-    throw error;
+  } finally {
+    // Always close the page, even on error
+    await page.close().catch(() => {});
   }
 }
 
@@ -162,17 +204,8 @@ function shouldGoDirect(pathname: string): boolean {
 }
 
 async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
-  const headers = new Headers();
-  headers.set("Referer", TARGET_DOMAIN + "/");
-  headers.set("Origin", TARGET_DOMAIN);
-  headers.set("User-Agent", req.headers.get("User-Agent") || "Mozilla/5.0");
-  headers.set("Accept-Encoding", "identity");
-
-  const cookie = req.headers.get("Cookie");
-  if (cookie) headers.set("Cookie", cookie);
-
-  const contentType = req.headers.get("Content-Type");
-  if (contentType) headers.set("Content-Type", contentType);
+  const headers = getForwardHeaders(req);
+  headers['Accept-Encoding'] = 'identity'; // No compression for direct
 
   const response = await fetch(targetUrl, {
     method: req.method,
@@ -223,17 +256,9 @@ Bun.serve({
       // HTML pages - use browser to bypass verification
       console.log(`[${req.method}] [BROWSER] ${targetUrl}`);
 
-      const contentType = req.headers.get("Content-Type") || undefined;
-      const body =
-        req.method !== "GET" && req.method !== "HEAD"
-          ? await req.text()
-          : undefined;
-
       const { html, status, cookies } = await fetchWithBrowser(
         targetUrl,
-        req.method,
-        body,
-        contentType
+        req
       );
 
       const responseHeaders = new Headers();
