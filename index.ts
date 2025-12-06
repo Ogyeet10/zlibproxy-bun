@@ -234,6 +234,120 @@ async function fetchWithBrowser(
   }
 }
 
+async function downloadWithBrowser(
+  targetUrl: string,
+  req: Request
+): Promise<Response> {
+  const ctx = await initBrowser();
+  const page = await ctx.newPage();
+
+  try {
+    // Forward all headers from the incoming request (except cookie - handled separately)
+    const headers = getForwardHeaders(req);
+    delete headers["cookie"];
+    delete headers["Cookie"];
+    await page.setExtraHTTPHeaders(headers);
+
+    // Parse and set cookies on the browser context
+    const cookieHeader = req.headers.get("cookie");
+    if (cookieHeader) {
+      const ZLIB_COOKIES = ["remix_userid", "remix_userkey"];
+      
+      const cookiesToSet = cookieHeader
+        .split(";")
+        .map((c) => {
+          const parts = c.trim().split("=");
+          const name = parts[0]?.trim() || "";
+          const value = parts.slice(1).join("=").trim();
+          return {
+            name,
+            value,
+            domain: ".z-library.ec",
+            path: "/",
+          };
+        })
+        .filter((c) => c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name));
+
+      if (cookiesToSet.length > 0) {
+        await ctx.addCookies(cookiesToSet);
+        console.log(`  -> Set ${cookiesToSet.length} cookies on browser context`);
+      }
+    }
+
+    // Set up download handling
+    const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
+    
+    // Navigate to the download URL
+    console.log(`  -> Navigating to download URL...`);
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+
+    // Wait for the download to start
+    console.log(`  -> Waiting for download to start...`);
+    const download = await downloadPromise;
+    
+    console.log(`  -> Download started: ${download.suggestedFilename()}`);
+    
+    // Get the download as a readable stream
+    const stream = await download.createReadStream();
+    if (!stream) {
+      throw new Error("Failed to get download stream");
+    }
+
+    // Read the stream into a buffer
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const fileBuffer = Buffer.concat(chunks);
+    
+    console.log(`  -> Download complete: ${fileBuffer.length} bytes`);
+
+    // Determine content type from filename
+    const filename = download.suggestedFilename();
+    let contentType = "application/octet-stream";
+    if (filename.endsWith(".epub")) contentType = "application/epub+zip";
+    else if (filename.endsWith(".pdf")) contentType = "application/pdf";
+    else if (filename.endsWith(".mobi")) contentType = "application/x-mobipocket-ebook";
+    else if (filename.endsWith(".azw3")) contentType = "application/vnd.amazon.ebook";
+    else if (filename.endsWith(".fb2")) contentType = "application/x-fictionbook+xml";
+    else if (filename.endsWith(".djvu")) contentType = "image/vnd.djvu";
+    else if (filename.endsWith(".zip")) contentType = "application/zip";
+
+    const responseHeaders = new Headers();
+    responseHeaders.set("Content-Type", contentType);
+    responseHeaders.set("Content-Length", fileBuffer.length.toString());
+    responseHeaders.set("Content-Disposition", `attachment; filename="${filename}"`);
+    responseHeaders.set("Access-Control-Allow-Origin", "*");
+
+    return new Response(fileBuffer, {
+      status: 200,
+      headers: responseHeaders,
+    });
+  } catch (error) {
+    console.error("Download error:", error);
+    
+    // Check if we got a page instead of a download (e.g., limit exceeded)
+    try {
+      const html = await page.content();
+      const title = await page.title();
+      console.log(`  -> Page title instead of download: "${title}"`);
+      
+      // Return the HTML page so client can see the error
+      return new Response(html, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
+    } catch {
+      throw error;
+    }
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
 // Static file extensions that don't need browser rendering
 const STATIC_EXTENSIONS = [
   ".js",
@@ -278,7 +392,7 @@ const DIRECT_PATH_PATTERNS = [
   "/favicon", // Favicons
   "/img/", // Images directory
   "/fonts/", // Fonts directory
-  "/dl/", // Download URLs
+  // "/dl/" removed - needs browser to bypass Cloudflare
 ];
 
 function shouldGoDirect(pathname: string): boolean {
@@ -301,14 +415,36 @@ async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
   const headers = getForwardHeaders(req);
   headers["accept-encoding"] = "identity"; // No compression for direct
 
+  // Extract cookie value and ensure we send it with proper casing
+  const cookieValue = req.headers.get("cookie") || req.headers.get("Cookie");
+  
+  // Remove any existing cookie variations from headers
+  delete headers["cookie"];
+  delete headers["Cookie"];
+  delete headers["COOKIE"];
+  
+  // Force set Cookie with capital C (some servers are picky)
+  if (cookieValue) {
+    headers["Cookie"] = cookieValue;
+    console.log(`  -> Forcing Cookie header: ${cookieValue}`);
+  }
+
   console.log(`  -> Forwarding headers to ${targetUrl}:`);
   Object.entries(headers).forEach(([key, value]) => {
     console.log(`     ${key}: ${value}`);
   });
 
+  // Use array format to bypass Headers normalization and send raw header name
+  const headersList: [string, string][] = Object.entries(headers);
+  
+  console.log(`  -> Raw headers list being sent:`);
+  headersList.forEach(([key, value]) => {
+    console.log(`     [${key}]: ${value}`);
+  });
+
   const response = await fetch(targetUrl, {
     method: req.method,
-    headers,
+    headers: headersList,
     body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
     redirect: "follow",
   });
@@ -360,6 +496,12 @@ Bun.serve({
       if (shouldGoDirect(url.pathname)) {
         console.log(`[${req.method}] [DIRECT] ${targetUrl}`);
         return await fetchDirect(targetUrl, req);
+      }
+
+      // Download URLs - use browser to bypass Cloudflare and handle download
+      if (url.pathname.toLowerCase().includes("/dl/")) {
+        console.log(`[${req.method}] [DOWNLOAD] ${targetUrl}`);
+        return await downloadWithBrowser(targetUrl, req);
       }
 
       // HTML pages - use browser to bypass verification
