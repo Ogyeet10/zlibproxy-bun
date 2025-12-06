@@ -48,7 +48,7 @@ function getForwardHeaders(req: Request): Record<string, string> {
     }
   });
   
-  // Override/set essential headers
+  // Override/set essential headers for z-library
   headers['Referer'] = TARGET_DOMAIN + '/';
   headers['Origin'] = TARGET_DOMAIN;
   
@@ -214,7 +214,7 @@ function shouldGoDirect(pathname: string): boolean {
 
 async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
   const headers = getForwardHeaders(req);
-  headers['Accept-Encoding'] = 'identity'; // No compression for direct
+  headers['accept-encoding'] = 'identity'; // No compression for direct
 
   console.log(`  -> Forwarding headers to ${targetUrl}:`);
   Object.entries(headers).forEach(([key, value]) => {
@@ -238,8 +238,11 @@ async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
   responseHeaders.set("Content-Length", body.byteLength.toString());
   responseHeaders.set("Access-Control-Allow-Origin", "*");
 
-  const setCookie = response.headers.get("Set-Cookie");
-  if (setCookie) responseHeaders.set("Set-Cookie", setCookie);
+  // Forward ALL Set-Cookie headers (there can be multiple)
+  const setCookies = response.headers.getSetCookie();
+  setCookies.forEach(cookie => {
+    responseHeaders.append("Set-Cookie", cookie);
+  });
 
   return new Response(body, {
     status: response.status,
