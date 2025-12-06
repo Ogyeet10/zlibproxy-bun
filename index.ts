@@ -277,9 +277,17 @@ async function downloadWithBrowser(
     // Set up download handling
     const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
     
-    // Navigate to the download URL
+    // Navigate to the download URL - this will throw if download starts (which is expected)
     console.log(`  -> Navigating to download URL...`);
-    await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+    try {
+      await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+    } catch (e: any) {
+      // "Download is starting" error is expected - ignore it
+      if (!e.message?.includes("Download is starting")) {
+        throw e;
+      }
+      console.log(`  -> Download triggered (goto threw as expected)`);
+    }
 
     // Wait for the download to start
     console.log(`  -> Waiting for download to start...`);
