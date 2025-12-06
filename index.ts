@@ -182,9 +182,12 @@ async function fetchWithBrowser(
     delete headers["Cookie"];
     await page.setExtraHTTPHeaders(headers);
 
-    // Parse and set cookies on the browser context
+    // Parse and set cookies on the browser context - only z-library related ones
     const cookieHeader = req.headers.get("cookie");
     if (cookieHeader) {
+      // Only forward z-library auth cookies
+      const ZLIB_COOKIES = ["remix_userid", "remix_userkey"];
+      
       const cookiesToSet = cookieHeader
         .split(";")
         .map((c) => {
@@ -198,7 +201,7 @@ async function fetchWithBrowser(
             path: "/",
           };
         })
-        .filter((c) => c.name !== "" && c.value !== "");
+        .filter((c) => c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name));
 
       if (cookiesToSet.length > 0) {
         await ctx.addCookies(cookiesToSet);
