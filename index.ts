@@ -29,6 +29,7 @@ const SKIP_HEADERS = [
   "transfer-encoding",
   "upgrade",
   "x-proxy-auth", // Our auth header
+  "user-agent", // Don't override - let Patchright use its own UA to match browser fingerprint
 ];
 
 function logIncomingHeaders(req: Request, targetUrl: string): void {
