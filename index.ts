@@ -31,6 +31,14 @@ const SKIP_HEADERS = [
   'x-proxy-auth', // Our auth header
 ];
 
+function logIncomingHeaders(req: Request, targetUrl: string): void {
+  console.log(`\n--- Incoming Request Headers for ${targetUrl} ---`);
+  req.headers.forEach((value, key) => {
+    console.log(`  ${key}: ${value}`);
+  });
+  console.log('-------------------------------------------\n');
+}
+
 function getForwardHeaders(req: Request): Record<string, string> {
   const headers: Record<string, string> = {};
   
@@ -208,6 +216,11 @@ async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
   const headers = getForwardHeaders(req);
   headers['Accept-Encoding'] = 'identity'; // No compression for direct
 
+  console.log(`  -> Forwarding headers to ${targetUrl}:`);
+  Object.entries(headers).forEach(([key, value]) => {
+    console.log(`     ${key}: ${value}`);
+  });
+
   const response = await fetch(targetUrl, {
     method: req.method,
     headers,
@@ -248,6 +261,13 @@ Bun.serve({
     const targetUrl = TARGET_DOMAIN + targetPath;
 
     try {
+      // Log all incoming headers for debugging
+      console.log(`\n--- Incoming Headers ---`);
+      req.headers.forEach((value, key) => {
+        console.log(`  ${key}: ${value}`);
+      });
+      console.log(`------------------------\n`);
+
       // Static assets & API endpoints - fetch directly without browser
       if (shouldGoDirect(url.pathname)) {
         console.log(`[${req.method}] [DIRECT] ${targetUrl}`);
