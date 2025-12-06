@@ -96,6 +96,7 @@ async function waitForBrowserCheck(page: Page): Promise<void> {
     try {
       const title = await page.title();
       const lowerTitle = title.toLowerCase();
+      console.log(`  -> Page title: "${title}"`);
 
       if (
         !lowerTitle.includes("checking") &&
@@ -109,6 +110,20 @@ async function waitForBrowserCheck(page: Page): Promise<void> {
     }
 
     await new Promise((r) => setTimeout(r, 250));
+  }
+
+  // Take screenshot on timeout for debugging
+  try {
+    const screenshotPath = `/tmp/timeout-${Date.now()}.png`;
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+    console.log(`Timeout screenshot saved to: ${screenshotPath}`);
+    
+    const html = await page.content();
+    const htmlPath = `/tmp/timeout-${Date.now()}.html`;
+    await Bun.write(htmlPath, html);
+    console.log(`Timeout HTML saved to: ${htmlPath}`);
+  } catch (e) {
+    console.log("Failed to capture timeout debug info:", e);
   }
 
   throw new Error("Browser check timeout");
