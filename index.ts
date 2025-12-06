@@ -61,9 +61,19 @@ async function initBrowser(): Promise<BrowserContext> {
     return browserInitPromise;
   }
 
-  // Return existing context if already initialized
+  // Check if existing browser is still connected
   if (browser && context) {
-    return context;
+    try {
+      // Test if browser is still alive
+      await context.pages();
+      return context;
+    } catch {
+      // Browser crashed, reset and recreate
+      console.log("Browser crashed, recreating...");
+      browser = null;
+      context = null;
+      browserInitPromise = null;
+    }
   }
 
   // Create new initialization promise
@@ -71,12 +81,21 @@ async function initBrowser(): Promise<BrowserContext> {
     console.log("Launching browser...");
     browser = await chromium.launch({
       headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     });
 
     console.log("Creating browser context...");
     context = await browser.newContext({
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    });
+
+    // Handle browser disconnect
+    browser.on('disconnected', () => {
+      console.log("Browser disconnected!");
+      browser = null;
+      context = null;
+      browserInitPromise = null;
     });
 
     return context;
