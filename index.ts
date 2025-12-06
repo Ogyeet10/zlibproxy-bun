@@ -70,7 +70,7 @@ async function initBrowser(): Promise<BrowserContext> {
   browserInitPromise = (async () => {
     console.log("Launching browser...");
     browser = await chromium.launch({
-      headless: false,
+      headless: true,
     });
 
     console.log("Creating browser context...");
@@ -124,28 +124,33 @@ async function fetchWithBrowser(
   try {
     // Forward all headers from the incoming request (except cookie - handled separately)
     const headers = getForwardHeaders(req);
-    delete headers['cookie']; // Remove cookie from headers, we'll set it on context
-    delete headers['Cookie'];
+    delete headers["cookie"]; // Remove cookie from headers, we'll set it on context
+    delete headers["Cookie"];
     await page.setExtraHTTPHeaders(headers);
 
     // Parse and set cookies on the browser context
-    const cookieHeader = req.headers.get('cookie');
+    const cookieHeader = req.headers.get("cookie");
     if (cookieHeader) {
-      const cookiesToSet = cookieHeader.split(';').map(c => {
-        const parts = c.trim().split('=');
-        const name = parts[0]?.trim() || '';
-        const value = parts.slice(1).join('=').trim();
-        return {
-          name,
-          value,
-          domain: '.z-library.ec',
-          path: '/',
-        };
-      }).filter(c => c.name !== '' && c.value !== '');
-      
+      const cookiesToSet = cookieHeader
+        .split(";")
+        .map((c) => {
+          const parts = c.trim().split("=");
+          const name = parts[0]?.trim() || "";
+          const value = parts.slice(1).join("=").trim();
+          return {
+            name,
+            value,
+            domain: ".z-library.ec",
+            path: "/",
+          };
+        })
+        .filter((c) => c.name !== "" && c.value !== "");
+
       if (cookiesToSet.length > 0) {
         await ctx.addCookies(cookiesToSet);
-        console.log(`  -> Set ${cookiesToSet.length} cookies on browser context`);
+        console.log(
+          `  -> Set ${cookiesToSet.length} cookies on browser context`
+        );
       }
     }
 
