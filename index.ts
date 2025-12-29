@@ -95,7 +95,8 @@ async function initBrowser(): Promise<BrowserContext> {
   browserInitPromise = (async () => {
     console.log("Launching browser...");
     browser = await chromium.launch({
-      headless: true,
+      headless: false,
+      channel: "chrome",
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -187,7 +188,7 @@ async function fetchWithBrowser(
     if (cookieHeader) {
       // Only forward z-library auth cookies
       const ZLIB_COOKIES = ["remix_userid", "remix_userkey"];
-      
+
       const cookiesToSet = cookieHeader
         .split(";")
         .map((c) => {
@@ -201,7 +202,10 @@ async function fetchWithBrowser(
             path: "/",
           };
         })
-        .filter((c) => c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name));
+        .filter(
+          (c) =>
+            c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name)
+        );
 
       if (cookiesToSet.length > 0) {
         await ctx.addCookies(cookiesToSet);
@@ -252,7 +256,7 @@ async function downloadWithBrowser(
     const cookieHeader = req.headers.get("cookie");
     if (cookieHeader) {
       const ZLIB_COOKIES = ["remix_userid", "remix_userkey"];
-      
+
       const cookiesToSet = cookieHeader
         .split(";")
         .map((c) => {
@@ -266,17 +270,22 @@ async function downloadWithBrowser(
             path: "/",
           };
         })
-        .filter((c) => c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name));
+        .filter(
+          (c) =>
+            c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name)
+        );
 
       if (cookiesToSet.length > 0) {
         await ctx.addCookies(cookiesToSet);
-        console.log(`  -> Set ${cookiesToSet.length} cookies on browser context`);
+        console.log(
+          `  -> Set ${cookiesToSet.length} cookies on browser context`
+        );
       }
     }
 
     // Set up download handling
     const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
-    
+
     // Navigate to the download URL - this will throw if download starts (which is expected)
     console.log(`  -> Navigating to download URL...`);
     try {
@@ -292,9 +301,9 @@ async function downloadWithBrowser(
     // Wait for the download to start
     console.log(`  -> Waiting for download to start...`);
     const download = await downloadPromise;
-    
+
     console.log(`  -> Download started: ${download.suggestedFilename()}`);
-    
+
     // Get the download as a readable stream
     const stream = await download.createReadStream();
     if (!stream) {
@@ -307,7 +316,7 @@ async function downloadWithBrowser(
       chunks.push(Buffer.from(chunk));
     }
     const fileBuffer = Buffer.concat(chunks);
-    
+
     console.log(`  -> Download complete: ${fileBuffer.length} bytes`);
 
     // Determine content type from filename
@@ -315,16 +324,22 @@ async function downloadWithBrowser(
     let contentType = "application/octet-stream";
     if (filename.endsWith(".epub")) contentType = "application/epub+zip";
     else if (filename.endsWith(".pdf")) contentType = "application/pdf";
-    else if (filename.endsWith(".mobi")) contentType = "application/x-mobipocket-ebook";
-    else if (filename.endsWith(".azw3")) contentType = "application/vnd.amazon.ebook";
-    else if (filename.endsWith(".fb2")) contentType = "application/x-fictionbook+xml";
+    else if (filename.endsWith(".mobi"))
+      contentType = "application/x-mobipocket-ebook";
+    else if (filename.endsWith(".azw3"))
+      contentType = "application/vnd.amazon.ebook";
+    else if (filename.endsWith(".fb2"))
+      contentType = "application/x-fictionbook+xml";
     else if (filename.endsWith(".djvu")) contentType = "image/vnd.djvu";
     else if (filename.endsWith(".zip")) contentType = "application/zip";
 
     const responseHeaders = new Headers();
     responseHeaders.set("Content-Type", contentType);
     responseHeaders.set("Content-Length", fileBuffer.length.toString());
-    responseHeaders.set("Content-Disposition", `attachment; filename="${filename}"`);
+    responseHeaders.set(
+      "Content-Disposition",
+      `attachment; filename="${filename}"`
+    );
     responseHeaders.set("Access-Control-Allow-Origin", "*");
 
     return new Response(fileBuffer, {
@@ -333,13 +348,13 @@ async function downloadWithBrowser(
     });
   } catch (error) {
     console.error("Download error:", error);
-    
+
     // Check if we got a page instead of a download (e.g., limit exceeded)
     try {
       const html = await page.content();
       const title = await page.title();
       console.log(`  -> Page title instead of download: "${title}"`);
-      
+
       // Return the HTML page so client can see the error
       return new Response(html, {
         status: 200,
@@ -395,6 +410,7 @@ const DIRECT_PATH_PATTERNS = [
   "/cdn-cgi/", // Cloudflare CDN stuff
   "/papi/", // API endpoints
   "/api/", // API endpoints
+  "/rpc.php", // RPC endpoint
   "/resources/", // Static resources
   "/sw.js", // Service worker
   "/favicon", // Favicons
@@ -425,12 +441,12 @@ async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
 
   // Extract cookie value and ensure we send it with proper casing
   const cookieValue = req.headers.get("cookie") || req.headers.get("Cookie");
-  
+
   // Remove any existing cookie variations from headers
   delete headers["cookie"];
   delete headers["Cookie"];
   delete headers["COOKIE"];
-  
+
   // Force set Cookie with capital C (some servers are picky)
   if (cookieValue) {
     headers["Cookie"] = cookieValue;
@@ -444,7 +460,7 @@ async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
 
   // Use array format to bypass Headers normalization and send raw header name
   const headersList: [string, string][] = Object.entries(headers);
-  
+
   console.log(`  -> Raw headers list being sent:`);
   headersList.forEach(([key, value]) => {
     console.log(`     [${key}]: ${value}`);
@@ -485,9 +501,9 @@ Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
 
-    // if (req.headers.get("X-Proxy-Auth") !== AUTH_TOKEN) {
-    //   return new Response("Unauthorized", { status: 401 });
-    // }
+    if (req.headers.get("X-Proxy-Auth") !== AUTH_TOKEN) {
+      return new Response("Unauthorized", { status: 401 });
+    }
 
     const targetPath = url.pathname + url.search;
     const targetUrl = TARGET_DOMAIN + targetPath;
