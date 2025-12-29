@@ -556,6 +556,24 @@ Bun.serve({
   },
 });
 
+async function cleanup() {
+  console.log("\nShutting down...");
+  if (context) {
+    await context.close().catch(() => {});
+    context = null;
+  }
+  if (browser) {
+    await browser.close().catch(() => {});
+    browser = null;
+  }
+  console.log("Browser closed. Goodbye!");
+  process.exit(0);
+}
+
+process.on("SIGINT", cleanup);
+process.on("SIGTERM", cleanup);
+process.on("SIGHUP", cleanup);
+
 console.log(`Z-Library proxy running on port ${PORT}`);
 console.log("Initializing browser...");
 initBrowser().then(() => console.log("Browser ready!"));
