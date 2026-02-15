@@ -435,6 +435,16 @@ function shouldGoDirect(pathname: string): boolean {
   return false;
 }
 
+function normalizeHtmlForLegacyParser(html: string): string {
+  // New Z-Library pages use declarative Shadow DOM:
+  // <template shadowrootmode="open">...</template>
+  // Legacy app parsing expects these nodes in the light DOM.
+  const shadowTemplatePattern =
+    /<template\b(?=[^>]*\bshadowrootmode\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))[^>]*>([\s\S]*?)<\/template>/gi;
+
+  return html.replace(shadowTemplatePattern, "$1");
+}
+
 async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
   const headers = getForwardHeaders(req);
   headers["accept-encoding"] = "identity"; // No compression for direct
@@ -532,17 +542,21 @@ Bun.serve({
       console.log(`[${req.method}] [BROWSER] ${targetUrl}`);
 
       const { html, status, cookies } = await fetchWithBrowser(targetUrl, req);
+      const normalizedHtml = normalizeHtmlForLegacyParser(html);
 
       const responseHeaders = new Headers();
       responseHeaders.set("Content-Type", "text/html; charset=utf-8");
-      responseHeaders.set("Content-Length", Buffer.byteLength(html).toString());
+      responseHeaders.set(
+        "Content-Length",
+        Buffer.byteLength(normalizedHtml).toString()
+      );
       responseHeaders.set("Access-Control-Allow-Origin", "*");
 
       if (cookies.length > 0) {
         responseHeaders.set("Set-Cookie", cookies.join("; "));
       }
 
-      return new Response(html, {
+      return new Response(normalizedHtml, {
         status,
         headers: responseHeaders,
       });
