@@ -10,6 +10,8 @@ import {
 } from "patchright";
 
 const TARGET_DOMAIN = "https://z-library.ms";
+const TARGET_HOSTNAME = new URL(TARGET_DOMAIN).hostname;
+const TARGET_COOKIE_DOMAIN = `.${TARGET_HOSTNAME}`;
 const PORT = 9847;
 const AUTH_TOKEN = "e3882d5fc0f2cbaa696067c5fdc8457ca8c25cc4b7f56353";
 
@@ -46,6 +48,12 @@ const SKIP_HEADERS = [
   "sec-fetch-user",
 ];
 
+const CLOUDFLARE_CHALLENGE_HEADER_OVERRIDES = [
+  "origin",
+  "referer",
+  "upgrade-insecure-requests",
+];
+
 function logIncomingHeaders(req: Request, targetUrl: string): void {
   console.log(`\n--- Incoming Request Headers for ${targetUrl} ---`);
   req.headers.forEach((value, key) => {
@@ -68,6 +76,44 @@ function getForwardHeaders(req: Request): Record<string, string> {
   headers["Origin"] = TARGET_DOMAIN;
 
   return headers;
+}
+
+function getBrowserHeaders(req: Request): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const acceptLanguage = req.headers.get("accept-language");
+
+  if (acceptLanguage) {
+    headers["Accept-Language"] = acceptLanguage;
+  }
+
+  return headers;
+}
+
+function isCloudflareChallengeUrl(requestUrl: string): boolean {
+  const parsedUrl = new URL(requestUrl);
+
+  return (
+    parsedUrl.hostname === "challenges.cloudflare.com" ||
+    parsedUrl.pathname.startsWith("/cdn-cgi/challenge-platform/")
+  );
+}
+
+async function prepareBrowserPage(page: Page, req: Request): Promise<void> {
+  await page.route(
+    (requestUrl) => isCloudflareChallengeUrl(requestUrl.href),
+    async (route) => {
+      const headers = { ...route.request().headers() };
+
+      for (const header of CLOUDFLARE_CHALLENGE_HEADER_OVERRIDES) {
+        delete headers[header];
+      }
+
+      await route.continue({ headers });
+    },
+  );
+
+  // Keep browser subrequests natural; forced Origin/Referer breaks Turnstile CORS.
+  await page.setExtraHTTPHeaders(getBrowserHeaders(req));
 }
 
 async function initBrowser(): Promise<BrowserContext> {
@@ -95,8 +141,8 @@ async function initBrowser(): Promise<BrowserContext> {
   browserInitPromise = (async () => {
     console.log("Launching browser...");
     browser = await chromium.launch({
-      headless: true,
-      channel: "chrome"
+      headless: false,
+      channel: "chrome",
     });
 
     console.log("Creating browser context...");
@@ -169,11 +215,7 @@ async function fetchWithBrowser(
   const page = await ctx.newPage();
 
   try {
-    // Forward all headers from the incoming request (except cookie - handled separately)
-    const headers = getForwardHeaders(req);
-    delete headers["cookie"]; // Remove cookie from headers, we'll set it on context
-    delete headers["Cookie"];
-    await page.setExtraHTTPHeaders(headers);
+    await prepareBrowserPage(page, req);
 
     // Parse and set cookies on the browser context - only z-library related ones
     const cookieHeader = req.headers.get("cookie");
@@ -190,7 +232,7 @@ async function fetchWithBrowser(
           return {
             name,
             value,
-            domain: ".z-library.ec",
+            domain: TARGET_COOKIE_DOMAIN,
             path: "/",
           };
         })
@@ -238,11 +280,7 @@ async function downloadWithBrowser(
   const page = await ctx.newPage();
 
   try {
-    // Forward all headers from the incoming request (except cookie - handled separately)
-    const headers = getForwardHeaders(req);
-    delete headers["cookie"];
-    delete headers["Cookie"];
-    await page.setExtraHTTPHeaders(headers);
+    await prepareBrowserPage(page, req);
 
     // Parse and set cookies on the browser context
     const cookieHeader = req.headers.get("cookie");
@@ -258,7 +296,7 @@ async function downloadWithBrowser(
           return {
             name,
             value,
-            domain: ".z-library.ec",
+            domain: TARGET_COOKIE_DOMAIN,
             path: "/",
           };
         })
@@ -427,14 +465,31 @@ function shouldGoDirect(pathname: string): boolean {
   return false;
 }
 
-function normalizeHtmlForLegacyParser(html: string): string {
+function replaceAllText(text: string, search: string, replacement: string): string {
+  return text.split(search).join(replacement);
+}
+
+function normalizeHtmlForProxy(html: string, proxyOrigin: string): string {
   // New Z-Library pages use declarative Shadow DOM:
   // <template shadowrootmode="open">...</template>
   // Legacy app parsing expects these nodes in the light DOM.
   const shadowTemplatePattern =
     /<template\b(?=[^>]*\bshadowrootmode\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))[^>]*>([\s\S]*?)<\/template>/gi;
 
-  return html.replace(shadowTemplatePattern, "$1");
+  let normalized = html.replace(shadowTemplatePattern, "$1");
+  normalized = replaceAllText(normalized, TARGET_DOMAIN, proxyOrigin);
+  normalized = replaceAllText(
+    normalized,
+    TARGET_DOMAIN.replace("https://", "//"),
+    proxyOrigin,
+  );
+  normalized = replaceAllText(
+    normalized,
+    TARGET_DOMAIN.replace("https://", "http://"),
+    proxyOrigin,
+  );
+
+  return normalized;
 }
 
 async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
@@ -503,9 +558,9 @@ Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
 
-    if (req.headers.get("X-Proxy-Auth") !== AUTH_TOKEN) {
-      return new Response("Unauthorized", { status: 401 });
-    }
+    // if (req.headers.get("X-Proxy-Auth") !== AUTH_TOKEN) {
+    //   return new Response("Unauthorized", { status: 401 });
+    // }
 
     const targetPath = url.pathname + url.search;
     const targetUrl = TARGET_DOMAIN + targetPath;
@@ -534,13 +589,13 @@ Bun.serve({
       console.log(`[${req.method}] [BROWSER] ${targetUrl}`);
 
       const { html, status, cookies } = await fetchWithBrowser(targetUrl, req);
-      const normalizedHtml = normalizeHtmlForLegacyParser(html);
+      const normalizedHtml = normalizeHtmlForProxy(html, url.origin);
 
       const responseHeaders = new Headers();
       responseHeaders.set("Content-Type", "text/html; charset=utf-8");
       responseHeaders.set(
         "Content-Length",
-        Buffer.byteLength(normalizedHtml).toString()
+        Buffer.byteLength(normalizedHtml).toString(),
       );
       responseHeaders.set("Access-Control-Allow-Origin", "*");
 

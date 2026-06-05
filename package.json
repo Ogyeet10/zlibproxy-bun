@@ -10,6 +10,6 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "patchright": "^1.57.0"
+    "patchright": "^1.60.2"
   }
 }
