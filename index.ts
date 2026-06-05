@@ -96,19 +96,11 @@ async function initBrowser(): Promise<BrowserContext> {
     console.log("Launching browser...");
     browser = await chromium.launch({
       headless: true,
-      channel: "chrome",
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-      ],
+      channel: "chrome"
     });
 
     console.log("Creating browser context...");
-    context = await browser.newContext({
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    });
+    context = await browser.newContext();
 
     // Handle browser disconnect
     browser.on("disconnected", () => {
