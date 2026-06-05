@@ -170,7 +170,46 @@ async function initBrowser(): Promise<BrowserContext> {
   return browserInitPromise;
 }
 
+function randomDelay(min: number, max: number): Promise<void> {
+  const ms = min + Math.random() * (max - min);
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// Track whether we've already tried clicking so we don't spam the checkbox.
+let turnstileClickAttempted = false;
+
+async function humanMouseMove(
+  page: Page,
+  targetX: number,
+  targetY: number,
+): Promise<void> {
+  // Move the mouse in a few small stepped increments from a random-ish
+  // starting point so the trajectory isn't a single instant jump.
+  const startX = targetX - (40 + Math.random() * 80);
+  const startY = targetY - (30 + Math.random() * 60);
+  const steps = 6 + Math.floor(Math.random() * 6);
+
+  await page.mouse.move(startX, startY);
+  await randomDelay(40, 120);
+
+  for (let i = 1; i <= steps; i++) {
+    const progress = i / steps;
+    // Ease-in/out so speed isn't linear, plus a little jitter.
+    const eased = progress * progress * (3 - 2 * progress);
+    const x = startX + (targetX - startX) * eased + (Math.random() - 0.5) * 3;
+    const y = startY + (targetY - startY) * eased + (Math.random() - 0.5) * 3;
+    await page.mouse.move(x, y);
+    await randomDelay(15, 45);
+  }
+
+  await page.mouse.move(targetX, targetY);
+}
+
 async function clickTurnstileCheckbox(page: Page): Promise<void> {
+  if (turnstileClickAttempted) {
+    return;
+  }
+
   // The "Verify you are human" checkbox lives inside the Cloudflare
   // Turnstile iframe (challenges.cloudflare.com). Find that frame and click it.
   for (const frame of page.frames()) {
@@ -190,11 +229,36 @@ async function clickTurnstileCheckbox(page: Page): Promise<void> {
     );
 
     try {
-      if ((await checkbox.count()) > 0) {
-        await checkbox.first().click({ timeout: 2000 });
-        console.log("  -> Clicked Turnstile 'Verify you are human' checkbox");
+      if ((await checkbox.count()) === 0) {
         return;
       }
+
+      const target = checkbox.first();
+      // Wait for it to actually be visible/stable before touching it.
+      await target.waitFor({ state: "visible", timeout: 3000 });
+
+      // Humans don't click the instant the box renders.
+      await randomDelay(900, 2200);
+
+      const box = await target.boundingBox();
+      if (!box) {
+        return;
+      }
+
+      // Aim for a slightly off-center point inside the checkbox.
+      const targetX = box.x + box.width * (0.35 + Math.random() * 0.3);
+      const targetY = box.y + box.height * (0.35 + Math.random() * 0.3);
+
+      turnstileClickAttempted = true;
+
+      await humanMouseMove(page, targetX, targetY);
+      await randomDelay(120, 320);
+      await page.mouse.down();
+      await randomDelay(50, 140);
+      await page.mouse.up();
+
+      console.log("  -> Clicked Turnstile 'Verify you are human' checkbox");
+      return;
     } catch {
       // Checkbox may not be interactable yet; retried by the polling loop.
     }
@@ -203,6 +267,9 @@ async function clickTurnstileCheckbox(page: Page): Promise<void> {
 
 async function waitForBrowserCheck(page: Page): Promise<void> {
   console.log("Waiting for browser check to complete...");
+
+  // Fresh check for this navigation - allow one click attempt.
+  turnstileClickAttempted = false;
 
   // Poll the title until we pass the check - handles navigation/context destruction
   const timeout = 30000;
