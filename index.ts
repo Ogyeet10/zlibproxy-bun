@@ -9,7 +9,7 @@ import {
   type Page,
 } from "patchright";
 
-const TARGET_DOMAIN = "https://z-library.ec";
+const TARGET_DOMAIN = "https://z-library.ms";
 const PORT = 9847;
 const AUTH_TOKEN = "e3882d5fc0f2cbaa696067c5fdc8457ca8c25cc4b7f56353";
 
@@ -171,7 +171,7 @@ async function waitForBrowserCheck(page: Page): Promise<void> {
 
 async function fetchWithBrowser(
   targetUrl: string,
-  req: Request
+  req: Request,
 ): Promise<{ html: string; status: number; cookies: string[] }> {
   const ctx = await initBrowser();
   const page = await ctx.newPage();
@@ -204,13 +204,13 @@ async function fetchWithBrowser(
         })
         .filter(
           (c) =>
-            c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name)
+            c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name),
         );
 
       if (cookiesToSet.length > 0) {
         await ctx.addCookies(cookiesToSet);
         console.log(
-          `  -> Set ${cookiesToSet.length} cookies on browser context`
+          `  -> Set ${cookiesToSet.length} cookies on browser context`,
         );
       }
     }
@@ -240,7 +240,7 @@ async function fetchWithBrowser(
 
 async function downloadWithBrowser(
   targetUrl: string,
-  req: Request
+  req: Request,
 ): Promise<Response> {
   const ctx = await initBrowser();
   const page = await ctx.newPage();
@@ -272,13 +272,13 @@ async function downloadWithBrowser(
         })
         .filter(
           (c) =>
-            c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name)
+            c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name),
         );
 
       if (cookiesToSet.length > 0) {
         await ctx.addCookies(cookiesToSet);
         console.log(
-          `  -> Set ${cookiesToSet.length} cookies on browser context`
+          `  -> Set ${cookiesToSet.length} cookies on browser context`,
         );
       }
     }
@@ -338,7 +338,7 @@ async function downloadWithBrowser(
     responseHeaders.set("Content-Length", fileBuffer.length.toString());
     responseHeaders.set(
       "Content-Disposition",
-      `attachment; filename="${filename}"`
+      `attachment; filename="${filename}"`,
     );
     responseHeaders.set("Access-Control-Allow-Origin", "*");
 
@@ -488,7 +488,7 @@ async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
   const responseHeaders = new Headers();
   responseHeaders.set(
     "Content-Type",
-    response.headers.get("Content-Type") || "application/octet-stream"
+    response.headers.get("Content-Type") || "application/octet-stream",
   );
   responseHeaders.set("Content-Length", body.byteLength.toString());
   responseHeaders.set("Access-Control-Allow-Origin", "*");
