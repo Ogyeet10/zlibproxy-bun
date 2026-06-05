@@ -141,7 +141,7 @@ async function initBrowser(): Promise<BrowserContext> {
   browserInitPromise = (async () => {
     console.log("Launching browser...");
     browser = await chromium.launch({
-      headless: true,
+      headless: false,
       channel: "chrome",
       args: [
         "--no-sandbox",
