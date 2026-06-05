@@ -9,7 +9,7 @@ import {
   type Page,
 } from "patchright";
 
-const TARGET_DOMAIN = "https://z-library.ms";
+const TARGET_DOMAIN = "https://z-library.sk";
 const TARGET_HOSTNAME = new URL(TARGET_DOMAIN).hostname;
 const TARGET_COOKIE_DOMAIN = `.${TARGET_HOSTNAME}`;
 const PORT = 9847;
