@@ -162,6 +162,37 @@ async function initBrowser(): Promise<BrowserContext> {
   return browserInitPromise;
 }
 
+async function clickTurnstileCheckbox(page: Page): Promise<void> {
+  // The "Verify you are human" checkbox lives inside the Cloudflare
+  // Turnstile iframe (challenges.cloudflare.com). Find that frame and click it.
+  for (const frame of page.frames()) {
+    let frameUrl = "";
+    try {
+      frameUrl = frame.url();
+    } catch {
+      continue;
+    }
+
+    if (!frameUrl.includes("challenges.cloudflare.com")) {
+      continue;
+    }
+
+    const checkbox = frame.locator(
+      'input[type="checkbox"], #challenge-stage, .cb-lb',
+    );
+
+    try {
+      if ((await checkbox.count()) > 0) {
+        await checkbox.first().click({ timeout: 2000 });
+        console.log("  -> Clicked Turnstile 'Verify you are human' checkbox");
+        return;
+      }
+    } catch {
+      // Checkbox may not be interactable yet; retried by the polling loop.
+    }
+  }
+}
+
 async function waitForBrowserCheck(page: Page): Promise<void> {
   console.log("Waiting for browser check to complete...");
 
@@ -185,6 +216,9 @@ async function waitForBrowserCheck(page: Page): Promise<void> {
     } catch {
       // Context was destroyed due to navigation, wait a bit and retry
     }
+
+    // If the verification checkbox is shown, click it.
+    await clickTurnstileCheckbox(page).catch(() => {});
 
     await new Promise((r) => setTimeout(r, 250));
   }
