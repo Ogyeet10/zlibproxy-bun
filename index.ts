@@ -141,7 +141,7 @@ async function initBrowser(): Promise<BrowserContext> {
   browserInitPromise = (async () => {
     console.log("Launching browser...");
     browser = await chromium.launch({
-      headless: false,
+      headless: true,
       channel: "chrome",
     });
 
@@ -465,7 +465,11 @@ function shouldGoDirect(pathname: string): boolean {
   return false;
 }
 
-function replaceAllText(text: string, search: string, replacement: string): string {
+function replaceAllText(
+  text: string,
+  search: string,
+  replacement: string,
+): string {
   return text.split(search).join(replacement);
 }
 
