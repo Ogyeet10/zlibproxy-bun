@@ -82,6 +82,9 @@ function getBrowserHeaders(req: Request): Record<string, string> {
   const headers: Record<string, string> = {};
   const acceptLanguage = req.headers.get("accept-language");
 
+  headers["Referer"] = TARGET_DOMAIN + "/";
+  headers["Origin"] = TARGET_DOMAIN;
+
   if (acceptLanguage) {
     headers["Accept-Language"] = acceptLanguage;
   }
@@ -112,7 +115,8 @@ async function prepareBrowserPage(page: Page, req: Request): Promise<void> {
     },
   );
 
-  // Keep browser subrequests natural; forced Origin/Referer breaks Turnstile CORS.
+  // Z-Library expects these browser headers. Cloudflare challenge requests strip
+  // them above so Turnstile doesn't receive a forced cross-origin Origin/Referer.
   await page.setExtraHTTPHeaders(getBrowserHeaders(req));
 }
 
