@@ -151,6 +151,7 @@ async function initBrowser(): Promise<BrowserContext> {
     });
 
     console.log("Creating browser context...");
+    context = await browser.newContext();
 
     // Handle browser disconnect
     browser.on("disconnected", () => {
