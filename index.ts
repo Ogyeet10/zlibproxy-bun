@@ -48,12 +48,6 @@ const SKIP_HEADERS = [
   "sec-fetch-user",
 ];
 
-const CLOUDFLARE_CHALLENGE_HEADER_OVERRIDES = [
-  "origin",
-  "referer",
-  "upgrade-insecure-requests",
-];
-
 function logIncomingHeaders(req: Request, targetUrl: string): void {
   console.log(`\n--- Incoming Request Headers for ${targetUrl} ---`);
   req.headers.forEach((value, key) => {
@@ -82,9 +76,6 @@ function getBrowserHeaders(req: Request): Record<string, string> {
   const headers: Record<string, string> = {};
   const acceptLanguage = req.headers.get("accept-language");
 
-  headers["Referer"] = TARGET_DOMAIN + "/";
-  headers["Origin"] = TARGET_DOMAIN;
-
   if (acceptLanguage) {
     headers["Accept-Language"] = acceptLanguage;
   }
@@ -92,31 +83,30 @@ function getBrowserHeaders(req: Request): Record<string, string> {
   return headers;
 }
 
-function isCloudflareChallengeUrl(requestUrl: string): boolean {
+function isTargetDomainUrl(requestUrl: string): boolean {
   const parsedUrl = new URL(requestUrl);
 
-  return (
-    parsedUrl.hostname === "challenges.cloudflare.com" ||
-    parsedUrl.pathname.startsWith("/cdn-cgi/challenge-platform/")
-  );
+  return parsedUrl.hostname === TARGET_HOSTNAME;
 }
 
 async function prepareBrowserPage(page: Page, req: Request): Promise<void> {
-  await page.route(
-    (requestUrl) => isCloudflareChallengeUrl(requestUrl.href),
-    async (route) => {
-      const headers = { ...route.request().headers() };
+  await page.route("**/*", async (route) => {
+    const requestUrl = route.request().url();
 
-      for (const header of CLOUDFLARE_CHALLENGE_HEADER_OVERRIDES) {
-        delete headers[header];
-      }
+    if (!isTargetDomainUrl(requestUrl)) {
+      await route.continue();
+      return;
+    }
 
-      await route.continue({ headers });
-    },
-  );
+    const headers = { ...route.request().headers() };
+    headers.referer = TARGET_DOMAIN + "/";
+    headers.origin = TARGET_DOMAIN;
 
-  // Z-Library expects these browser headers. Cloudflare challenge requests strip
-  // them above so Turnstile doesn't receive a forced cross-origin Origin/Referer.
+    await route.continue({ headers });
+  });
+
+  // Only safe page-wide browser headers. Origin/Referer are applied per request
+  // above so Cloudflare challenge/session requests pass through untouched.
   await page.setExtraHTTPHeaders(getBrowserHeaders(req));
 }
 
