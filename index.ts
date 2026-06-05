@@ -18,6 +18,9 @@ const AUTH_TOKEN = "e3882d5fc0f2cbaa696067c5fdc8457ca8c25cc4b7f56353";
 let browser: Browser | null = null;
 let context: BrowserContext | null = null;
 let browserInitPromise: Promise<BrowserContext> | null = null;
+let browserPage: Page | null = null;
+let browserPageQueue: Promise<void> = Promise.resolve();
+const routedBrowserPages = new WeakSet<Page>();
 
 // Headers to skip when forwarding (hop-by-hop or problematic)
 const SKIP_HEADERS = [
@@ -48,6 +51,12 @@ const SKIP_HEADERS = [
   "sec-fetch-user",
 ];
 
+const CLOUDFLARE_CHALLENGE_HEADER_OVERRIDES = [
+  "origin",
+  "referer",
+  "upgrade-insecure-requests",
+];
+
 function logIncomingHeaders(req: Request, targetUrl: string): void {
   console.log(`\n--- Incoming Request Headers for ${targetUrl} ---`);
   req.headers.forEach((value, key) => {
@@ -76,6 +85,9 @@ function getBrowserHeaders(req: Request): Record<string, string> {
   const headers: Record<string, string> = {};
   const acceptLanguage = req.headers.get("accept-language");
 
+  headers["Referer"] = TARGET_DOMAIN + "/";
+  headers["Origin"] = TARGET_DOMAIN;
+
   if (acceptLanguage) {
     headers["Accept-Language"] = acceptLanguage;
   }
@@ -83,31 +95,65 @@ function getBrowserHeaders(req: Request): Record<string, string> {
   return headers;
 }
 
-function isTargetDomainUrl(requestUrl: string): boolean {
+function isCloudflareChallengeUrl(requestUrl: string): boolean {
   const parsedUrl = new URL(requestUrl);
 
-  return parsedUrl.hostname === TARGET_HOSTNAME;
+  return (
+    parsedUrl.hostname === "challenges.cloudflare.com" ||
+    parsedUrl.pathname.startsWith("/cdn-cgi/challenge-platform/")
+  );
 }
 
 async function prepareBrowserPage(page: Page, req: Request): Promise<void> {
-  await page.route("**/*", async (route) => {
-    const requestUrl = route.request().url();
+  if (!routedBrowserPages.has(page)) {
+    routedBrowserPages.add(page);
 
-    if (!isTargetDomainUrl(requestUrl)) {
-      await route.continue();
-      return;
-    }
+    await page.route(
+      (requestUrl) => isCloudflareChallengeUrl(requestUrl.href),
+      async (route) => {
+        const headers = { ...route.request().headers() };
 
-    const headers = { ...route.request().headers() };
-    headers.referer = TARGET_DOMAIN + "/";
-    headers.origin = TARGET_DOMAIN;
+        for (const header of CLOUDFLARE_CHALLENGE_HEADER_OVERRIDES) {
+          delete headers[header];
+        }
 
-    await route.continue({ headers });
+        await route.continue({ headers });
+      },
+    );
+  }
+
+  // Z-Library expects these browser headers. Cloudflare challenge requests strip
+  // them above so Turnstile doesn't receive a forced cross-origin Origin/Referer.
+  await page.setExtraHTTPHeaders(getBrowserHeaders(req));
+}
+
+async function getBrowserPage(ctx: BrowserContext): Promise<Page> {
+  if (browserPage && !browserPage.isClosed()) {
+    return browserPage;
+  }
+
+  browserPage = await ctx.newPage();
+  return browserPage;
+}
+
+async function withBrowserPage<T>(
+  handler: (page: Page) => Promise<T>,
+): Promise<T> {
+  const ctx = await initBrowser();
+  const previous = browserPageQueue;
+  let release!: () => void;
+
+  browserPageQueue = new Promise<void>((resolve) => {
+    release = resolve;
   });
 
-  // Only safe page-wide browser headers. Origin/Referer are applied per request
-  // above so Cloudflare challenge/session requests pass through untouched.
-  await page.setExtraHTTPHeaders(getBrowserHeaders(req));
+  await previous;
+
+  try {
+    return await handler(await getBrowserPage(ctx));
+  } finally {
+    release();
+  }
 }
 
 async function initBrowser(): Promise<BrowserContext> {
@@ -152,6 +198,7 @@ async function initBrowser(): Promise<BrowserContext> {
       console.log("Browser disconnected!");
       browser = null;
       context = null;
+      browserPage = null;
       browserInitPromise = null;
     });
 
@@ -364,10 +411,9 @@ async function fetchWithBrowser(
   targetUrl: string,
   req: Request,
 ): Promise<{ html: string; status: number; cookies: string[] }> {
-  const ctx = await initBrowser();
-  const page = await ctx.newPage();
+  return await withBrowserPage(async (page) => {
+    const ctx = await initBrowser();
 
-  try {
     await prepareBrowserPage(page, req);
 
     // Parse and set cookies on the browser context - only z-library related ones
@@ -415,14 +461,11 @@ async function fetchWithBrowser(
     const html = await page.content();
 
     // Get cookies for the response
-    const cookies = await ctx.cookies();
+    const cookies = await ctx.cookies(TARGET_DOMAIN);
     const cookieStrings = cookies.map((c) => `${c.name}=${c.value}`);
 
     return { html, status: 200, cookies: cookieStrings };
-  } finally {
-    // Always close the page, even on error
-    await page.close().catch(() => {});
-  }
+  });
 }
 
 async function downloadWithBrowser(
@@ -626,6 +669,41 @@ function replaceAllText(
   return text.split(search).join(replacement);
 }
 
+function mergeCookieHeaders(...cookieHeaders: (string | null)[]): string {
+  const cookies = new Map<string, string>();
+
+  for (const cookieHeader of cookieHeaders) {
+    if (!cookieHeader) {
+      continue;
+    }
+
+    for (const cookie of cookieHeader.split(";")) {
+      const parts = cookie.trim().split("=");
+      const name = parts[0]?.trim();
+      const value = parts.slice(1).join("=").trim();
+
+      if (name && value) {
+        cookies.set(name, value);
+      }
+    }
+  }
+
+  return Array.from(cookies, ([name, value]) => `${name}=${value}`).join("; ");
+}
+
+async function getBrowserCookieHeader(): Promise<string> {
+  if (!context && browserInitPromise) {
+    await browserInitPromise.catch(() => {});
+  }
+
+  if (!context) {
+    return "";
+  }
+
+  const cookies = await context.cookies(TARGET_DOMAIN);
+  return cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
+}
+
 function normalizeHtmlForProxy(html: string, proxyOrigin: string): string {
   // New Z-Library pages use declarative Shadow DOM:
   // <template shadowrootmode="open">...</template>
@@ -654,7 +732,10 @@ async function fetchDirect(targetUrl: string, req: Request): Promise<Response> {
   headers["accept-encoding"] = "identity"; // No compression for direct
 
   // Extract cookie value and ensure we send it with proper casing
-  const cookieValue = req.headers.get("cookie") || req.headers.get("Cookie");
+  const cookieValue = mergeCookieHeaders(
+    req.headers.get("cookie") || req.headers.get("Cookie"),
+    await getBrowserCookieHeader(),
+  );
 
   // Remove any existing cookie variations from headers
   delete headers["cookie"];
@@ -756,9 +837,9 @@ Bun.serve({
       );
       responseHeaders.set("Access-Control-Allow-Origin", "*");
 
-      if (cookies.length > 0) {
-        responseHeaders.set("Set-Cookie", cookies.join("; "));
-      }
+      cookies.forEach((cookie) => {
+        responseHeaders.append("Set-Cookie", `${cookie}; Path=/; SameSite=Lax`);
+      });
 
       return new Response(normalizedHtml, {
         status,
