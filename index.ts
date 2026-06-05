@@ -262,6 +262,36 @@ async function clickTurnstileCheckbox(page: Page): Promise<void> {
   }
 }
 
+async function isCloudflareChallengeActive(
+  page: Page,
+  title: string,
+): Promise<boolean> {
+  const lowerTitle = title.toLowerCase();
+
+  if (
+    lowerTitle.includes("just a moment") ||
+    lowerTitle.includes("checking") ||
+    lowerTitle.includes("security verification") ||
+    lowerTitle.startsWith("loading http")
+  ) {
+    return true;
+  }
+
+  try {
+    const bodyText = await page.locator("body").innerText({ timeout: 1000 });
+    const lowerBodyText = bodyText.toLowerCase();
+
+    return (
+      lowerBodyText.includes("verify you are human") ||
+      lowerBodyText.includes("performing security verification") ||
+      lowerBodyText.includes("checking if the site connection is secure") ||
+      lowerBodyText.includes("needs to review the security of your connection")
+    );
+  } catch {
+    return true;
+  }
+}
+
 async function waitForBrowserCheck(page: Page): Promise<void> {
   console.log("Waiting for browser check to complete...");
 
@@ -275,13 +305,9 @@ async function waitForBrowserCheck(page: Page): Promise<void> {
   while (Date.now() - start < timeout) {
     try {
       const title = await page.title();
-      const lowerTitle = title.toLowerCase();
       console.log(`  -> Page title: "${title}"`);
 
-      if (
-        !lowerTitle.includes("checking") &&
-        (lowerTitle.includes("z-library") || lowerTitle.includes("zlibrary"))
-      ) {
+      if (!(await isCloudflareChallengeActive(page, title))) {
         console.log("Browser check passed!");
         return;
       }
