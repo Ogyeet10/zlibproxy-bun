@@ -292,11 +292,27 @@ async function isCloudflareChallengeActive(
   }
 }
 
-async function waitForBrowserCheck(page: Page): Promise<void> {
+function shouldRestoreRequestedUrl(currentUrl: string, requestedUrl: string): boolean {
+  const current = new URL(currentUrl);
+  const requested = new URL(requestedUrl);
+
+  return (
+    current.origin === requested.origin &&
+    current.pathname === "/" &&
+    current.search === "" &&
+    (requested.pathname !== "/" || requested.search !== "")
+  );
+}
+
+async function waitForBrowserCheck(
+  page: Page,
+  requestedUrl: string,
+): Promise<void> {
   console.log("Waiting for browser check to complete...");
 
   // Fresh check for this navigation - allow one click attempt.
   turnstileClickAttempted = false;
+  let restoredRequestedUrl = false;
 
   // Poll the title until we pass the check - handles navigation/context destruction
   const timeout = 30000;
@@ -308,6 +324,17 @@ async function waitForBrowserCheck(page: Page): Promise<void> {
       console.log(`  -> Page title: "${title}"`);
 
       if (!(await isCloudflareChallengeActive(page, title))) {
+        if (
+          !restoredRequestedUrl &&
+          shouldRestoreRequestedUrl(page.url(), requestedUrl)
+        ) {
+          restoredRequestedUrl = true;
+          turnstileClickAttempted = false;
+          console.log(`  -> Restoring requested URL: ${requestedUrl}`);
+          await page.goto(requestedUrl, { waitUntil: "domcontentloaded" });
+          continue;
+        }
+
         console.log("Browser check passed!");
         return;
       }
@@ -385,7 +412,7 @@ async function fetchWithBrowser(
     await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
 
     // Check if we hit the browser verification page and wait for it to pass
-    await waitForBrowserCheck(page);
+    await waitForBrowserCheck(page, targetUrl);
 
     // Give the page a moment to fully render after navigation
     await page.waitForLoadState("networkidle");
