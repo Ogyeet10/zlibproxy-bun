@@ -9,7 +9,7 @@ import {
   type Page,
 } from "patchright";
 
-const TARGET_DOMAIN = "https://z-library.sk";
+const TARGET_DOMAIN = "https://z-library.ms";
 const TARGET_HOSTNAME = new URL(TARGET_DOMAIN).hostname;
 const TARGET_COOKIE_DOMAIN = `.${TARGET_HOSTNAME}`;
 const PORT = 9847;
@@ -21,6 +21,7 @@ let browserInitPromise: Promise<BrowserContext> | null = null;
 let browserPage: Page | null = null;
 let browserPageQueue: Promise<void> = Promise.resolve();
 const routedBrowserPages = new WeakSet<Page>();
+const DOWNLOAD_CONTROL_MARKER_ATTRIBUTE = "data-zlibproxy-download-target";
 
 // Headers to skip when forwarding (hop-by-hop or problematic)
 const SKIP_HEADERS = [
@@ -415,38 +416,7 @@ async function fetchWithBrowser(
     const ctx = await initBrowser();
 
     await prepareBrowserPage(page, req);
-
-    // Parse and set cookies on the browser context - only z-library related ones
-    const cookieHeader = req.headers.get("cookie");
-    if (cookieHeader) {
-      // Only forward z-library auth cookies
-      const ZLIB_COOKIES = ["remix_userid", "remix_userkey"];
-
-      const cookiesToSet = cookieHeader
-        .split(";")
-        .map((c) => {
-          const parts = c.trim().split("=");
-          const name = parts[0]?.trim() || "";
-          const value = parts.slice(1).join("=").trim();
-          return {
-            name,
-            value,
-            domain: TARGET_COOKIE_DOMAIN,
-            path: "/",
-          };
-        })
-        .filter(
-          (c) =>
-            c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name),
-        );
-
-      if (cookiesToSet.length > 0) {
-        await ctx.addCookies(cookiesToSet);
-        console.log(
-          `  -> Set ${cookiesToSet.length} cookies on browser context`,
-        );
-      }
-    }
+    await setRequestCookiesOnBrowserContext(ctx, req);
 
     // Navigate and wait for network to be mostly idle
     await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
@@ -468,133 +438,347 @@ async function fetchWithBrowser(
   });
 }
 
+async function setRequestCookiesOnBrowserContext(
+  ctx: BrowserContext,
+  req: Request,
+): Promise<void> {
+  const cookieHeader = req.headers.get("cookie");
+  if (!cookieHeader) {
+    return;
+  }
+
+  // Only forward z-library auth cookies.
+  const ZLIB_COOKIES = ["remix_userid", "remix_userkey"];
+  const cookiesToSet = cookieHeader
+    .split(";")
+    .map((c) => {
+      const parts = c.trim().split("=");
+      const name = parts[0]?.trim() || "";
+      const value = parts.slice(1).join("=").trim();
+      return {
+        name,
+        value,
+        domain: TARGET_COOKIE_DOMAIN,
+        path: "/",
+      };
+    })
+    .filter(
+      (c) => c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name),
+    );
+
+  if (cookiesToSet.length > 0) {
+    await ctx.addCookies(cookiesToSet);
+    console.log(`  -> Set ${cookiesToSet.length} cookies on browser context`);
+  }
+}
+
+function cssAttributeValue(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+async function findExistingDownloadControl(
+  page: Page,
+  targetUrl: string,
+): Promise<{
+  locator: ReturnType<Page["locator"]>;
+  description: string;
+} | null> {
+  const target = new URL(targetUrl);
+  const targetPath = target.pathname + target.search;
+  const marker = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const description = await page.evaluate(
+    ({ marker, markerAttribute, targetPath, targetUrl }) => {
+      const roots: (Document | ShadowRoot)[] = [document];
+      const elements: Element[] = [];
+
+      for (let i = 0; i < roots.length; i++) {
+        const root = roots[i];
+        if (!root) {
+          continue;
+        }
+
+        const rootElements = Array.from(root.querySelectorAll("*"));
+        elements.push(...rootElements);
+
+        for (const element of rootElements) {
+          if (element.shadowRoot) {
+            roots.push(element.shadowRoot);
+          }
+        }
+      }
+
+      for (const element of elements) {
+        element.removeAttribute(markerAttribute);
+      }
+
+      function valueMatchesTarget(value: string | null): boolean {
+        if (!value) {
+          return false;
+        }
+
+        if (value === targetUrl || value === targetPath) {
+          return true;
+        }
+
+        try {
+          const parsed = new URL(value, window.location.href);
+          if (
+            parsed.href === targetUrl ||
+            parsed.pathname + parsed.search === targetPath
+          ) {
+            return true;
+          }
+        } catch {
+          // Keep checking raw strings below.
+        }
+
+        return value.includes(targetUrl) || value.includes(targetPath);
+      }
+
+      function elementValues(element: Element): string[] {
+        const values: string[] = [];
+
+        for (const attribute of Array.from(element.attributes)) {
+          const name = attribute.name.toLowerCase();
+          if (
+            name === "href" ||
+            name === "action" ||
+            name === "formaction" ||
+            name === "onclick" ||
+            name.startsWith("data-")
+          ) {
+            values.push(attribute.value);
+          }
+        }
+
+        if (element instanceof HTMLAnchorElement) {
+          values.push(element.href);
+        }
+
+        if (element instanceof HTMLButtonElement) {
+          values.push(element.formAction);
+        }
+
+        if (element instanceof HTMLFormElement) {
+          values.push(element.action);
+        }
+
+        return values;
+      }
+
+      function clickableElement(element: Element): HTMLElement | null {
+        const selector =
+          'a, button, [role="button"], input[type="button"], input[type="submit"], [onclick]';
+
+        if (element instanceof HTMLElement && element.matches(selector)) {
+          return element;
+        }
+
+        const closest = element.closest(selector);
+        if (closest instanceof HTMLElement) {
+          return closest;
+        }
+
+        return element instanceof HTMLElement ? element : null;
+      }
+
+      function isVisible(element: HTMLElement): boolean {
+        const style = window.getComputedStyle(element);
+        const box = element.getBoundingClientRect();
+
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          box.width > 0 &&
+          box.height > 0
+        );
+      }
+
+      let bestMatch: { element: HTMLElement; score: number } | null = null;
+
+      for (const element of elements) {
+        const values = elementValues(element);
+        if (!values.some(valueMatchesTarget)) {
+          continue;
+        }
+
+        const clickTarget = clickableElement(element);
+        if (!clickTarget) {
+          continue;
+        }
+
+        if (!isVisible(clickTarget)) {
+          continue;
+        }
+
+        const text = (clickTarget.textContent || "").toLowerCase();
+        const descriptor = `${clickTarget.id} ${clickTarget.className} ${text}`;
+        let score = 1;
+
+        if (values.includes(targetUrl) || values.includes(targetPath)) {
+          score += 4;
+        }
+
+        if (descriptor.toLowerCase().includes("download")) {
+          score += 2;
+        }
+
+        if (clickTarget instanceof HTMLAnchorElement) {
+          score += 1;
+        }
+
+        if (!bestMatch || score > bestMatch.score) {
+          bestMatch = { element: clickTarget, score };
+        }
+      }
+
+      if (!bestMatch) {
+        return null;
+      }
+
+      const element = bestMatch.element;
+      element.setAttribute(markerAttribute, marker);
+
+      if (element instanceof HTMLAnchorElement) {
+        element.target = "_self";
+      }
+
+      const anchor = element.closest("a");
+      if (anchor instanceof HTMLAnchorElement) {
+        anchor.target = "_self";
+      }
+
+      const form = element.closest("form");
+      if (form instanceof HTMLFormElement) {
+        form.target = "_self";
+      }
+
+      const className = String(element.className).trim();
+
+      return `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ""}${
+        className ? `.${className.split(/\s+/).join(".")}` : ""
+      }`;
+    },
+    {
+      marker,
+      markerAttribute: DOWNLOAD_CONTROL_MARKER_ATTRIBUTE,
+      targetPath,
+      targetUrl,
+    },
+  );
+
+  if (!description) {
+    return null;
+  }
+
+  return {
+    locator: page
+      .locator(
+        `[${DOWNLOAD_CONTROL_MARKER_ATTRIBUTE}=${cssAttributeValue(marker)}]`,
+      )
+      .first(),
+    description,
+  };
+}
+
 async function downloadWithBrowser(
   targetUrl: string,
   req: Request,
 ): Promise<Response> {
-  const ctx = await initBrowser();
-  const page = await ctx.newPage();
+  return await withBrowserPage(async (page) => {
+    const ctx = await initBrowser();
 
-  try {
-    await prepareBrowserPage(page, req);
+    try {
+      await prepareBrowserPage(page, req);
+      await setRequestCookiesOnBrowserContext(ctx, req);
 
-    // Parse and set cookies on the browser context
-    const cookieHeader = req.headers.get("cookie");
-    if (cookieHeader) {
-      const ZLIB_COOKIES = ["remix_userid", "remix_userkey"];
-
-      const cookiesToSet = cookieHeader
-        .split(";")
-        .map((c) => {
-          const parts = c.trim().split("=");
-          const name = parts[0]?.trim() || "";
-          const value = parts.slice(1).join("=").trim();
-          return {
-            name,
-            value,
-            domain: TARGET_COOKIE_DOMAIN,
-            path: "/",
-          };
-        })
-        .filter(
-          (c) =>
-            c.name !== "" && c.value !== "" && ZLIB_COOKIES.includes(c.name),
-        );
-
-      if (cookiesToSet.length > 0) {
-        await ctx.addCookies(cookiesToSet);
-        console.log(
-          `  -> Set ${cookiesToSet.length} cookies on browser context`,
+      const downloadControl = await findExistingDownloadControl(page, targetUrl);
+      if (!downloadControl) {
+        throw new Error(
+          `Could not find existing download button for ${new URL(targetUrl).pathname}`,
         );
       }
-    }
 
-    // Set up download handling
-    const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
+      // Set up download handling before clicking; the click can start the download immediately.
+      const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
 
-    // Navigate to the download URL - this will throw if download starts (which is expected)
-    console.log(`  -> Navigating to download URL...`);
-    try {
-      await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
-    } catch (e: any) {
-      // "Download is starting" error is expected - ignore it
-      if (!e.message?.includes("Download is starting")) {
-        throw e;
+      console.log(
+        `  -> Clicking existing download control: ${downloadControl.description}`,
+      );
+      await downloadControl.locator.waitFor({ state: "visible", timeout: 5000 });
+      await downloadControl.locator.click();
+
+      // Wait for the download to start
+      console.log(`  -> Waiting for download to start...`);
+      const download = await downloadPromise;
+
+      console.log(`  -> Download started: ${download.suggestedFilename()}`);
+
+      // Get the download as a readable stream
+      const stream = await download.createReadStream();
+      if (!stream) {
+        throw new Error("Failed to get download stream");
       }
-      console.log(`  -> Download triggered (goto threw as expected)`);
-    }
 
-    // Wait for the download to start
-    console.log(`  -> Waiting for download to start...`);
-    const download = await downloadPromise;
+      // Read the stream into a buffer
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) {
+        chunks.push(Buffer.from(chunk));
+      }
+      const fileBuffer = Buffer.concat(chunks);
 
-    console.log(`  -> Download started: ${download.suggestedFilename()}`);
+      console.log(`  -> Download complete: ${fileBuffer.length} bytes`);
 
-    // Get the download as a readable stream
-    const stream = await download.createReadStream();
-    if (!stream) {
-      throw new Error("Failed to get download stream");
-    }
+      // Determine content type from filename
+      const filename = download.suggestedFilename();
+      let contentType = "application/octet-stream";
+      if (filename.endsWith(".epub")) contentType = "application/epub+zip";
+      else if (filename.endsWith(".pdf")) contentType = "application/pdf";
+      else if (filename.endsWith(".mobi"))
+        contentType = "application/x-mobipocket-ebook";
+      else if (filename.endsWith(".azw3"))
+        contentType = "application/vnd.amazon.ebook";
+      else if (filename.endsWith(".fb2"))
+        contentType = "application/x-fictionbook+xml";
+      else if (filename.endsWith(".djvu")) contentType = "image/vnd.djvu";
+      else if (filename.endsWith(".zip")) contentType = "application/zip";
 
-    // Read the stream into a buffer
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      chunks.push(Buffer.from(chunk));
-    }
-    const fileBuffer = Buffer.concat(chunks);
+      const responseHeaders = new Headers();
+      responseHeaders.set("Content-Type", contentType);
+      responseHeaders.set("Content-Length", fileBuffer.length.toString());
+      responseHeaders.set(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`,
+      );
+      responseHeaders.set("Access-Control-Allow-Origin", "*");
 
-    console.log(`  -> Download complete: ${fileBuffer.length} bytes`);
-
-    // Determine content type from filename
-    const filename = download.suggestedFilename();
-    let contentType = "application/octet-stream";
-    if (filename.endsWith(".epub")) contentType = "application/epub+zip";
-    else if (filename.endsWith(".pdf")) contentType = "application/pdf";
-    else if (filename.endsWith(".mobi"))
-      contentType = "application/x-mobipocket-ebook";
-    else if (filename.endsWith(".azw3"))
-      contentType = "application/vnd.amazon.ebook";
-    else if (filename.endsWith(".fb2"))
-      contentType = "application/x-fictionbook+xml";
-    else if (filename.endsWith(".djvu")) contentType = "image/vnd.djvu";
-    else if (filename.endsWith(".zip")) contentType = "application/zip";
-
-    const responseHeaders = new Headers();
-    responseHeaders.set("Content-Type", contentType);
-    responseHeaders.set("Content-Length", fileBuffer.length.toString());
-    responseHeaders.set(
-      "Content-Disposition",
-      `attachment; filename="${filename}"`,
-    );
-    responseHeaders.set("Access-Control-Allow-Origin", "*");
-
-    return new Response(fileBuffer, {
-      status: 200,
-      headers: responseHeaders,
-    });
-  } catch (error) {
-    console.error("Download error:", error);
-
-    // Check if we got a page instead of a download (e.g., limit exceeded)
-    try {
-      const html = await page.content();
-      const title = await page.title();
-      console.log(`  -> Page title instead of download: "${title}"`);
-
-      // Return the HTML page so client can see the error
-      return new Response(html, {
+      return new Response(fileBuffer, {
         status: 200,
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Access-Control-Allow-Origin": "*",
-        },
+        headers: responseHeaders,
       });
-    } catch {
-      throw error;
+    } catch (error) {
+      console.error("Download error:", error);
+
+      // Check if we got a page instead of a download (e.g., limit exceeded)
+      try {
+        const html = await page.content();
+        const title = await page.title();
+        console.log(`  -> Page title instead of download: "${title}"`);
+
+        // Return the HTML page so client can see the error
+        return new Response(html, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+          },
+        });
+      } catch {
+        throw error;
+      }
     }
-  } finally {
-    await page.close().catch(() => {});
-  }
+  });
 }
 
 // Static file extensions that don't need browser rendering
